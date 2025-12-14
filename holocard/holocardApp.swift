@@ -1,14 +1,13 @@
-//
-//  holocardApp.swift
-//  holocard
-//
-//  Created by ChingyangLin on 2025/12/12.
-//
-
 import SwiftUI
+import FirebaseCore
 
 @main
 struct holocardApp: App {
+    
+    init() {
+        FirebaseApp.configure()
+    }
+    
     var body: some Scene {
         WindowGroup {
             ContentView()
