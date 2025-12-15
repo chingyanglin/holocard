@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleIdentifier</key>
+	<string></string>
+	<key>Motion Usage Description</key>
+	<string>需要使用動作感應來呈現卡片 3D 效果</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>需要存取您的照片來製作卡片</string>
 	<key>CFBundleURLTypes</key>

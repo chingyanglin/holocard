@@ -14,6 +14,7 @@ struct HomeView: View {
     @State private var searchText = ""
     var onNavigateToEditor: (() -> Void)? = nil
     var onNavigateToProfile: (() -> Void)? = nil
+    var onNavigateToDrafts: (() -> Void)? = nil  // 新增
     
     let categories = ["Silver", "Gold", "Flash", "Ruby", "Platinum", "Diamond"]
     
@@ -84,7 +85,9 @@ struct HomeView: View {
                 
                 // 底部導航
                 BottomTabBar(selectedTab: 0, onTabChange: { tab in
-                    if tab == 3 {
+                    if tab == 1 {
+                        onNavigateToDrafts?()  // 愛心 = 草稿頁
+                    } else if tab == 3 {
                         onNavigateToProfile?()
                     }
                 })
