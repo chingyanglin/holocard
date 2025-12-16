@@ -12,6 +12,7 @@ struct HomeView: View {
     @StateObject private var userService = UserService.shared
     @State private var selectedCategory = "Silver"
     @State private var searchText = ""
+    @State private var isReady = false  // 延遲載入控制
     var onNavigateToEditor: (() -> Void)? = nil
     var onNavigateToProfile: (() -> Void)? = nil
     var onNavigateToDrafts: (() -> Void)? = nil  // 新增
@@ -77,9 +78,15 @@ struct HomeView: View {
                 CategoryTabs(categories: categories, selected: $selectedCategory)
                     .padding(.top, 16)
                 
-                // 卡片輪播 - 傳入選中的分類
-                CardCarousel(selectedCategory: selectedCategory)
-                    .padding(.top, 16)
+                // 卡片輪播 - 延遲載入
+                if isReady {
+                    CardCarousel(selectedCategory: selectedCategory)
+                        .padding(.top, 16)
+                } else {
+                    // 骨架屏
+                    CardSkeletonView()
+                        .padding(.top, 16)
+                }
                 
                 Spacer(minLength: 0)
                 
@@ -95,6 +102,14 @@ struct HomeView: View {
         }
         .onAppear {
             loadUserProfile()
+            // 延遲載入卡片，讓 UI 先渲染
+            if !isReady {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        isReady = true
+                    }
+                }
+            }
         }
     }
     
@@ -106,9 +121,11 @@ struct HomeView: View {
         return authVM.user?.email ?? "User"
     }
     
-    // 載入用戶資料
+    // 載入用戶資料（只在需要時載入）
     private func loadUserProfile() {
         guard let userId = authVM.user?.uid else { return }
+        // 如果已經有資料，不重複載入
+        if userService.userProfile != nil { return }
         userService.fetchUserProfile(userId: userId)
     }
 }
@@ -149,40 +166,7 @@ struct HeaderSection: View {
             
             // 用戶頭像按鈕
             Button(action: onProfileTap) {
-                if !photoURL.isEmpty, let url = URL(string: photoURL) {
-                    AsyncImage(url: url) { image in
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    } placeholder: {
-                        Circle()
-                            .fill(Color.gray.opacity(0.2))
-                            .overlay(
-                                Image(systemName: "person.fill")
-                                    .foregroundColor(.gray)
-                            )
-                    }
-                    .frame(width: 44, height: 44)
-                    .clipShape(Circle())
-                    .overlay(
-                        Circle()
-                            .stroke(Color.gray.opacity(0.3), lineWidth: 1.5)
-                    )
-                    .rotationEffect(.degrees(isSpinning ? 720 : 0))
-                    .animation(.easeInOut(duration: 0.8), value: isSpinning)
-                } else {
-                    Image(systemName: "sparkle")
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundColor(.black)
-                        .frame(width: 44, height: 44)
-                        .background(Color.clear)
-                        .overlay(
-                            Circle()
-                                .stroke(Color.gray.opacity(0.3), lineWidth: 1.5)
-                        )
-                        .rotationEffect(.degrees(isSpinning ? 720 : 0))
-                        .animation(.easeInOut(duration: 0.8), value: isSpinning)
-                }
+                ProfileImageView(photoURL: photoURL, isSpinning: isSpinning)
             }
             .onLongPressGesture(minimumDuration: 0.1) {
                 isSpinning = true
@@ -193,6 +177,61 @@ struct HeaderSection: View {
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
+    }
+}
+
+// MARK: - 頭像圖片（獨立組件避免重繪）
+struct ProfileImageView: View {
+    let photoURL: String
+    let isSpinning: Bool
+    
+    var body: some View {
+        Group {
+            if !photoURL.isEmpty, let url = URL(string: photoURL) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    case .failure(_):
+                        placeholderImage
+                    case .empty:
+                        ProgressView()
+                            .frame(width: 44, height: 44)
+                    @unknown default:
+                        placeholderImage
+                    }
+                }
+                .frame(width: 44, height: 44)
+                .clipShape(Circle())
+                .overlay(
+                    Circle()
+                        .stroke(Color.gray.opacity(0.3), lineWidth: 1.5)
+                )
+            } else {
+                Image(systemName: "sparkle")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundColor(.black)
+                    .frame(width: 44, height: 44)
+                    .background(Color.clear)
+                    .overlay(
+                        Circle()
+                            .stroke(Color.gray.opacity(0.3), lineWidth: 1.5)
+                    )
+            }
+        }
+        .rotationEffect(.degrees(isSpinning ? 720 : 0))
+        .animation(.easeInOut(duration: 0.8), value: isSpinning)
+    }
+    
+    private var placeholderImage: some View {
+        Circle()
+            .fill(Color.gray.opacity(0.2))
+            .overlay(
+                Image(systemName: "person.fill")
+                    .foregroundColor(.gray)
+            )
     }
 }
 
@@ -288,6 +327,52 @@ struct CategoryTab: View {
     }
 }
 
+// MARK: - 卡片骨架屏（載入中）
+struct CardSkeletonView: View {
+    @State private var isAnimating = false
+    
+    var body: some View {
+        GeometryReader { geometry in
+            let cardWidth = geometry.size.width * 0.75
+            let cardHeight = geometry.size.height - 20
+            
+            HStack(spacing: 12) {
+                // 左側卡片（模糊）
+                RoundedRectangle(cornerRadius: 28)
+                    .fill(Color.gray.opacity(0.15))
+                    .frame(width: cardWidth, height: cardHeight)
+                    .scaleEffect(0.9)
+                    .opacity(0.6)
+                
+                // 中間卡片（主要）
+                RoundedRectangle(cornerRadius: 28)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.gray.opacity(0.2), Color.gray.opacity(0.1)],
+                            startPoint: isAnimating ? .leading : .trailing,
+                            endPoint: isAnimating ? .trailing : .leading
+                        )
+                    )
+                    .frame(width: cardWidth, height: cardHeight)
+                
+                // 右側卡片（模糊）
+                RoundedRectangle(cornerRadius: 28)
+                    .fill(Color.gray.opacity(0.15))
+                    .frame(width: cardWidth, height: cardHeight)
+                    .scaleEffect(0.9)
+                    .opacity(0.6)
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+        }
+        .padding(.bottom, 10)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                isAnimating = true
+            }
+        }
+    }
+}
+
 // MARK: - 卡片輪播
 struct CardCarousel: View {
     let selectedCategory: String
@@ -346,14 +431,21 @@ struct CardCarousel: View {
             
             HStack(spacing: spacing) {
                 ForEach(0..<cards.count, id: \.self) { index in
-                    CardView(card: cards[index])
-                        .frame(width: cardWidth, height: cardHeight)
-                        .scaleEffect(currentIndex == index ? 1.0 : 0.9)
-                        .opacity(currentIndex == index ? 1.0 : 0.6)
-                        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: currentIndex)
+                    // 只渲染可見的卡片（當前 ±1）
+                    if abs(index - currentIndex) <= 1 {
+                        CardView(card: cards[index])
+                            .frame(width: cardWidth, height: cardHeight)
+                            .scaleEffect(currentIndex == index ? 1.0 : 0.9)
+                            .opacity(currentIndex == index ? 1.0 : 0.6)
+                    } else {
+                        // 佔位符（不渲染內容）
+                        Color.clear
+                            .frame(width: cardWidth, height: cardHeight)
+                    }
                 }
             }
             .offset(x: -CGFloat(currentIndex) * (cardWidth + spacing) + (geometry.size.width - cardWidth) / 2 + dragOffset)
+            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: currentIndex)
             .gesture(
                 DragGesture()
                     .updating($dragOffset) { value, state, _ in
@@ -369,17 +461,13 @@ struct CardCarousel: View {
                             newIndex = max(currentIndex - 1, 0)
                         }
                         
-                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                            currentIndex = newIndex
-                        }
+                        currentIndex = newIndex
                     }
             )
         }
         .padding(.bottom, 10)
         .onChange(of: selectedCategory) { _ in
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                currentIndex = 1
-            }
+            currentIndex = 1
         }
     }
 }

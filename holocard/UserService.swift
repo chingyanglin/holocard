@@ -5,11 +5,6 @@
 //  Created by ChingyangLin on 2025/12/13.
 //
 
-//
-//  UserService.swift
-//  holocard
-//
-
 import Foundation
 import FirebaseAuth
 import FirebaseFirestore
@@ -25,11 +20,45 @@ class UserService: ObservableObject {
     private let db = Firestore.firestore()
     private let storage = Storage.storage()
     
+    // 快取 Key
+    private let cacheKey = "holocard_user_profile_cache"
+    
     @Published var userProfile: UserProfile?
     @Published var isLoading = false
     
+    init() {
+        // 啟動時先載入快取（秒開）
+        loadCachedProfile()
+    }
+    
+    // MARK: - 載入快取資料
+    private func loadCachedProfile() {
+        if let data = UserDefaults.standard.data(forKey: cacheKey),
+           let cached = try? JSONDecoder().decode(UserProfile.self, from: data) {
+            self.userProfile = cached
+        }
+    }
+    
+    // MARK: - 儲存快取
+    private func cacheProfile(_ profile: UserProfile) {
+        if let data = try? JSONEncoder().encode(profile) {
+            UserDefaults.standard.set(data, forKey: cacheKey)
+        }
+    }
+    
+    // MARK: - 清除快取（登出時呼叫）
+    func clearCache() {
+        UserDefaults.standard.removeObject(forKey: cacheKey)
+        userProfile = nil
+    }
+    
     // MARK: - 取得用戶資料
     func fetchUserProfile(userId: String) {
+        // 如果快取的 userId 不同，清除舊快取
+        if let cached = userProfile, cached.id != userId {
+            clearCache()
+        }
+        
         isLoading = true
         
         db.collection("users").document(userId).getDocument { snapshot, error in
@@ -42,13 +71,15 @@ class UserService: ObservableObject {
                 }
                 
                 if let data = snapshot?.data() {
-                    self.userProfile = UserProfile(
+                    let profile = UserProfile(
                         id: userId,
                         displayName: data["displayName"] as? String ?? "",
                         photoURL: data["photoURL"] as? String ?? "",
                         memberLevel: data["memberLevel"] as? String ?? "Noobie",
                         cardsCreated: data["cardsCreated"] as? Int ?? 0
                     )
+                    self.userProfile = profile
+                    self.cacheProfile(profile)  // 更新快取
                 } else {
                     // 新用戶，建立預設資料
                     self.createDefaultProfile(userId: userId)
@@ -81,6 +112,7 @@ class UserService: ObservableObject {
             } else {
                 DispatchQueue.main.async {
                     self.userProfile = defaultProfile
+                    self.cacheProfile(defaultProfile)
                 }
             }
         }
@@ -97,6 +129,9 @@ class UserService: ObservableObject {
                     completion(false)
                 } else {
                     self.userProfile?.displayName = name
+                    if let profile = self.userProfile {
+                        self.cacheProfile(profile)
+                    }
                     completion(true)
                 }
             }
@@ -149,6 +184,9 @@ class UserService: ObservableObject {
                             completion(false)
                         } else {
                             self.userProfile?.photoURL = downloadURL.absoluteString
+                            if let profile = self.userProfile {
+                                self.cacheProfile(profile)
+                            }
                             completion(true)
                         }
                     }
@@ -158,8 +196,8 @@ class UserService: ObservableObject {
     }
 }
 
-// MARK: - 用戶資料模型
-struct UserProfile {
+// MARK: - 用戶資料模型（加入 Codable 支援快取）
+struct UserProfile: Codable {
     var id: String
     var displayName: String
     var photoURL: String

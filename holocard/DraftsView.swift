@@ -109,15 +109,15 @@ struct DraftsView: View {
                         if filteredDrafts.isEmpty {
                             // 空狀態
                             VStack(spacing: 16) {
-                                Image(systemName: "tray")
+                                Image(systemName: selectedCategory == .saved ? "tray" : "sparkles")
                                     .font(.system(size: 48))
                                     .foregroundColor(.gray.opacity(0.5))
                                 
-                                Text(selectedCategory == .saved ? "沒有已儲存的草稿" : "沒有已發布的卡片")
+                                Text(selectedCategory == .saved ? "沒有已儲存的草稿" : "還沒有已發布的卡片")
                                     .font(.system(size: 16, weight: .medium))
                                     .foregroundColor(.gray)
                                 
-                                Text("開始製作你的第一張 HoloCard！")
+                                Text(selectedCategory == .saved ? "開始製作你的第一張 HoloCard！" : "發布你的第一張閃卡吧！")
                                     .font(.system(size: 14))
                                     .foregroundColor(.gray.opacity(0.7))
                             }
@@ -396,7 +396,7 @@ struct StackedCard: View {
                     
                     HStack(spacing: 6) {
                         Circle()
-                            .fill(Color.green)
+                            .fill(draft.status == .published ? Color(hex: "BFFF00") : Color.green)
                             .frame(width: 10, height: 10)
                         Text(draft.status.displayName)
                             .font(.system(size: 12))

@@ -174,6 +174,11 @@ struct EditorView: View {
     @State private var currentDraftId: String?
     @State private var hasSaved = false  // 追蹤是否已儲存
     
+    // 發布相關
+    @State private var showPublishAnimation = false
+    @State private var isPublishing = false
+    @State private var showPublishSuccess = false
+    
     // 是否有未儲存的變更（必須有圖片才算）
     private var hasUnsavedChanges: Bool {
         // 如果已經儲存過，就沒有未儲存的變更
@@ -182,9 +187,14 @@ struct EditorView: View {
         return selectedImage != nil
     }
     
-    // 是否可以儲存（必須有圖片）
+    // 是否可以儲存（必須有圖片，不管是否在上傳中）
     private var canSave: Bool {
-        return selectedImage != nil && !isUploading
+        return selectedImage != nil
+    }
+    
+    // 是否可以發布（必須有圖片 + 至少一個元素：外框或效果）
+    private var canPublish: Bool {
+        return selectedImage != nil && (selectedFrame != nil || selectedShineEffect != nil)
     }
     
     var body: some View {
@@ -209,7 +219,9 @@ struct EditorView: View {
                             }
                         },
                         onSave: saveDraft,
-                        canSave: canSave
+                        onPublish: publishCard,
+                        canSave: canSave,
+                        canPublish: canPublish
                     )
                     
                     Spacer()
@@ -289,8 +301,31 @@ struct EditorView: View {
                     .background(Color.black.opacity(0.8))
                     .cornerRadius(16)
                     .transition(.scale.combined(with: .opacity))
+                    .zIndex(100)  // 確保在最上層
+                }
+                
+                // 發布動畫
+                if showPublishAnimation {
+                    PublishAnimationView(
+                        cardImage: selectedImage,
+                        frame: selectedFrame,
+                        shineEffect: selectedShineEffect,
+                        showSuccess: $showPublishSuccess,
+                        onDismiss: {
+                            withAnimation {
+                                showPublishAnimation = false
+                                isPublishing = false
+                            }
+                            // 回到首頁
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                onBack()
+                            }
+                        }
+                    )
+                    .zIndex(200)
                 }
             }
+            .animation(.easeInOut(duration: 0.2), value: showSaveConfirmation)
         }
         .alert("儲存草稿？", isPresented: $showBackConfirmation) {
             Button("不儲存", role: .destructive) {
@@ -307,6 +342,11 @@ struct EditorView: View {
             Text("你有未儲存的變更，要在離開前儲存嗎？")
         }
         .onAppear {
+            // 重置上傳狀態（避免殘留）
+            isUploading = false
+            isSaving = false
+            showSaveConfirmation = false
+            // 載入現有草稿
             loadExistingDraft()
         }
     }
@@ -342,6 +382,14 @@ struct EditorView: View {
         
         isUploading = true
         
+        // 30 秒超時保護
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+            if self.isUploading {
+                print("⚠️ Firebase 上傳超時，強制結束")
+                self.isUploading = false
+            }
+        }
+        
         let storageRef = Storage.storage().reference()
         let imageRef = storageRef.child("cards/\(UUID().uuidString).jpg")
         
@@ -352,17 +400,16 @@ struct EditorView: View {
             if let error = error {
                 print("Upload error: \(error.localizedDescription)")
                 DispatchQueue.main.async {
-                    isUploading = false
+                    self.isUploading = false
                 }
                 return
             }
             
             imageRef.downloadURL { url, error in
                 DispatchQueue.main.async {
-                    isUploading = false
+                    self.isUploading = false
                     if let url = url {
-                        uploadedImageURL = url.absoluteString
-                        print("Image uploaded: \(url.absoluteString)")
+                        self.uploadedImageURL = url.absoluteString
                     }
                 }
             }
@@ -375,9 +422,11 @@ struct EditorView: View {
         
         isSaving = true
         
-        // 先顯示確認彈窗
-        showSaveConfirmation = true
-        hasSaved = true
+        // 先顯示確認彈窗（確保在主線程）
+        DispatchQueue.main.async {
+            self.showSaveConfirmation = true
+            self.hasSaved = true
+        }
         
         // 在背景執行儲存
         DispatchQueue.global(qos: .userInitiated).async {
@@ -410,6 +459,47 @@ struct EditorView: View {
         // 2 秒後自動關閉確認提示
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             self.showSaveConfirmation = false
+        }
+    }
+    
+    // 發布卡片
+    private func publishCard() {
+        guard canPublish else { return }
+        
+        isPublishing = true
+        
+        // 在背景執行儲存
+        DispatchQueue.global(qos: .userInitiated).async {
+            var draft = CardDraft(
+                id: self.currentDraftId ?? UUID().uuidString,
+                createdAt: self.existingDraft?.createdAt ?? Date(),
+                updatedAt: Date(),
+                status: .published  // 設為已發布
+            )
+            
+            // 儲存圖片到檔案系統
+            if let image = self.selectedImage {
+                draft.saveImage(image)
+            }
+            
+            DispatchQueue.main.async {
+                draft.imageURL = self.uploadedImageURL
+                draft.frameName = self.selectedFrame?.name
+                draft.shineEffectName = self.selectedShineEffect?.name
+                draft.imageOffsetX = self.imageOffset.width
+                draft.imageOffsetY = self.imageOffset.height
+                draft.imageScale = self.imageScale
+                
+                // 儲存到 DraftManager
+                DraftManager.shared.saveDraft(draft)
+                self.currentDraftId = draft.id
+                self.hasSaved = true
+                
+                // 顯示發布動畫
+                withAnimation(.easeOut(duration: 0.3)) {
+                    self.showPublishAnimation = true
+                }
+            }
         }
     }
     
@@ -451,7 +541,9 @@ struct EditorView: View {
 struct EditorHeader: View {
     var onBack: () -> Void
     var onSave: () -> Void
+    var onPublish: () -> Void
     var canSave: Bool = true
+    var canPublish: Bool = false
     
     var body: some View {
         HStack {
@@ -465,7 +557,7 @@ struct EditorHeader: View {
             Spacer()
             
             // 右側工具
-            HStack(spacing: 20) {
+            HStack(spacing: 16) {
                 // Undo
                 Button(action: {}) {
                     Image(systemName: "arrow.uturn.backward")
@@ -482,11 +574,31 @@ struct EditorHeader: View {
                 
                 // 儲存草稿
                 Button(action: onSave) {
-                    Image(systemName: "opticaldiscdrive.fill")
+                    Image(systemName: "square.and.arrow.down")
                         .font(.system(size: 16))
                         .foregroundColor(canSave ? .black : .gray.opacity(0.4))
                 }
                 .disabled(!canSave)
+                
+                // 發布按鈕
+                Button(action: onPublish) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "paperplane.fill")
+                            .font(.system(size: 14))
+                        Text("發布")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .foregroundColor(canPublish ? .black : .gray)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(
+                        canPublish
+                            ? Color.white
+                            : Color.white.opacity(0.5)
+                    )
+                    .cornerRadius(20)
+                }
+                .disabled(!canPublish)
             }
         }
         .padding(.horizontal, 20)
@@ -1578,6 +1690,293 @@ struct RoundedCorner: Shape {
             cornerRadii: CGSize(width: radius, height: radius)
         )
         return Path(path.cgPath)
+    }
+}
+
+// MARK: - 發布動畫視圖
+struct PublishAnimationView: View {
+    let cardImage: UIImage?
+    let frame: FrameTemplate?
+    let shineEffect: ShineEffect?
+    @Binding var showSuccess: Bool
+    var onDismiss: () -> Void
+    
+    @State private var showOverlay = false
+    @State private var showLightRays = false
+    @State private var showCard = false
+    @State private var cardScale: CGFloat = 0.3
+    @State private var cardRotation: Double = -30
+    @State private var showSuccessPopup = false
+    @State private var lightRayRotation: Double = 0
+    @State private var sparkles: [SparkleData] = []
+    
+    var body: some View {
+        ZStack {
+            // 背景遮罩
+            Color.black
+                .opacity(showOverlay ? 0.85 : 0)
+                .ignoresSafeArea()
+                .onTapGesture { } // 防止穿透
+            
+            // 光芒效果
+            if showLightRays {
+                LightRaysView(rotation: lightRayRotation)
+                    .opacity(showCard ? 0.6 : 1)
+            }
+            
+            // 閃爍粒子
+            ForEach(sparkles) { sparkle in
+                Image(systemName: "sparkle")
+                    .font(.system(size: sparkle.size))
+                    .foregroundColor(sparkle.color)
+                    .position(sparkle.position)
+                    .opacity(sparkle.opacity)
+            }
+            
+            // 卡片
+            if showCard {
+                VStack(spacing: 0) {
+                    // 卡片容器
+                    ZStack {
+                        // 外框
+                        if let frameTemplate = frame {
+                            RoundedRectangle(cornerRadius: 20)
+                                .fill(
+                                    LinearGradient(
+                                        colors: frameTemplate.gradientColors,
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                        }
+                        
+                        // 圖片
+                        if let uiImage = cardImage {
+                            let frameWidth: CGFloat = frame != nil ? 12 : 0
+                            
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 280 - frameWidth * 2, height: 392 - frameWidth * 2)
+                                .clipShape(RoundedRectangle(cornerRadius: frame != nil ? 12 : 20))
+                                .padding(frameWidth)
+                        }
+                        
+                        // 閃卡效果
+                        if shineEffect != nil {
+                            RoundedRectangle(cornerRadius: 20)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            .white.opacity(0.4),
+                                            .clear,
+                                            .white.opacity(0.2),
+                                            .clear
+                                        ],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .blendMode(.overlay)
+                        }
+                    }
+                    .frame(width: 280, height: 392)
+                    .shadow(color: Color(hex: "BFFF00").opacity(0.5), radius: 30, x: 0, y: 0)
+                    .shadow(color: .purple.opacity(0.3), radius: 50, x: 0, y: 10)
+                }
+                .scaleEffect(cardScale)
+                .rotation3DEffect(.degrees(cardRotation), axis: (x: 0, y: 1, z: 0))
+            }
+            
+            // 成功彈窗
+            if showSuccessPopup {
+                SuccessPopupView(onConfirm: onDismiss)
+                    .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .onAppear {
+            startAnimation()
+        }
+    }
+    
+    func startAnimation() {
+        // 階段 1：顯示背景遮罩
+        withAnimation(.easeOut(duration: 0.3)) {
+            showOverlay = true
+        }
+        
+        // 階段 2：光芒射出
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            withAnimation(.easeOut(duration: 0.5)) {
+                showLightRays = true
+            }
+            
+            // 光芒旋轉
+            withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
+                lightRayRotation = 360
+            }
+            
+            // 產生閃爍粒子
+            generateSparkles()
+        }
+        
+        // 階段 3：卡片登場
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            showCard = true
+            
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.7)) {
+                cardScale = 1.0
+                cardRotation = 0
+            }
+        }
+        
+        // 階段 4：顯示成功彈窗
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation(.spring(response: 0.4)) {
+                showSuccessPopup = true
+            }
+        }
+    }
+    
+    func generateSparkles() {
+        for i in 0..<20 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.1) {
+                let sparkle = SparkleData(
+                    position: CGPoint(
+                        x: CGFloat.random(in: 50...350),
+                        y: CGFloat.random(in: 100...700)
+                    ),
+                    size: CGFloat.random(in: 10...25),
+                    color: [Color.white, Color.yellow, Color(hex: "BFFF00"), Color.cyan].randomElement()!,
+                    opacity: 1.0
+                )
+                sparkles.append(sparkle)
+                
+                // 淡出
+                withAnimation(.easeOut(duration: 1.5)) {
+                    if let index = sparkles.firstIndex(where: { $0.id == sparkle.id }) {
+                        sparkles[index].opacity = 0
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 光芒效果
+struct LightRaysView: View {
+    var rotation: Double
+    
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                ForEach(0..<12) { i in
+                    LightRay()
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.8),
+                                    Color(hex: "BFFF00").opacity(0.4),
+                                    Color.clear
+                                ],
+                                startPoint: .bottom,
+                                endPoint: .top
+                            )
+                        )
+                        .frame(width: 60, height: geo.size.height)
+                        .rotationEffect(.degrees(Double(i) * 30 + rotation))
+                }
+            }
+            .position(x: geo.size.width / 2, y: geo.size.height / 2)
+        }
+        .blendMode(.plusLighter)
+    }
+}
+
+struct LightRay: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let centerX = rect.midX
+        let topWidth: CGFloat = 3
+        let bottomWidth: CGFloat = 80
+        
+        path.move(to: CGPoint(x: centerX - topWidth/2, y: 0))
+        path.addLine(to: CGPoint(x: centerX + topWidth/2, y: 0))
+        path.addLine(to: CGPoint(x: centerX + bottomWidth/2, y: rect.height))
+        path.addLine(to: CGPoint(x: centerX - bottomWidth/2, y: rect.height))
+        path.closeSubpath()
+        
+        return path
+    }
+}
+
+// MARK: - 閃爍數據
+struct SparkleData: Identifiable {
+    let id = UUID()
+    var position: CGPoint
+    var size: CGFloat
+    var color: Color
+    var opacity: Double
+}
+
+// MARK: - 成功彈窗
+struct SuccessPopupView: View {
+    var onConfirm: () -> Void
+    
+    var body: some View {
+        VStack(spacing: 24) {
+            // 圖標
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(hex: "BFFF00"), Color(hex: "00FF88")],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 80, height: 80)
+                
+                Image(systemName: "checkmark")
+                    .font(.system(size: 36, weight: .bold))
+                    .foregroundColor(.black)
+            }
+            
+            // 標題
+            Text("發布成功！")
+                .font(.system(size: 24, weight: .bold))
+                .foregroundColor(.white)
+            
+            // 說明
+            Text("卡片已儲存至個人卡套")
+                .font(.system(size: 16))
+                .foregroundColor(.gray)
+            
+            // 確認按鈕
+            Button(action: onConfirm) {
+                Text("OK")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.black)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 54)
+                    .background(
+                        LinearGradient(
+                            colors: [Color(hex: "BFFF00"), Color(hex: "00FF88")],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .cornerRadius(27)
+            }
+            .padding(.top, 8)
+        }
+        .padding(32)
+        .frame(width: 300)
+        .background(
+            RoundedRectangle(cornerRadius: 24)
+                .fill(Color(hex: "1a1a2e"))
+                .shadow(color: .black.opacity(0.5), radius: 30)
+        )
     }
 }
 
